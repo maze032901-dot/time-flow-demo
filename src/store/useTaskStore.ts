@@ -1,0 +1,558 @@
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { immer } from "zustand/middleware/immer";
+import { devtools } from "zustand/middleware";
+import { nanoid } from "nanoid";
+import type { Task, CollectedBottle, ScenarioTag } from "@/types/task";
+
+// ---------------------------------------------------------------------------
+// State shape
+// ---------------------------------------------------------------------------
+
+interface TaskState {
+  /** 所有任务（包含各生命周期状态） */
+  tasks: Task[];
+
+  /**
+   * 收集瓶：结算阶段，完成的任务快照飞入此列表
+   * 对应 UI 中底部的「水瓶收集」区域
+   */
+  collection: CollectedBottle[];
+
+  /**
+   * 当前进行中的任务 ID（同一时刻最多一个）
+   * null 表示当前没有正在进行的任务
+   */
+  activeTaskId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Actions shape
+// ---------------------------------------------------------------------------
+
+interface TaskActions {
+  // ── 任务 CRUD ──────────────────────────────────────────────────────────
+
+  /** 新建任务（初始状态：unscheduled，进入右侧任务池） */
+  addTask: (payload: {
+    title: string;
+    tag: ScenarioTag;
+    duration?: number;
+  }) => void;
+
+  /** 删除任务（任意状态均可删除） */
+  removeTask: (taskId: string) => void;
+
+  /** 更新任务基础信息（标题 / 标签 / 时长） */
+  updateTask: (
+    taskId: string,
+    patch: Partial<
+      Pick<
+        Task,
+        | "title"
+        | "tag"
+        | "duration"
+        | "type"
+        | "status"
+        | "isDone"
+        | "isUnfinished"
+        | "completedAt"
+        | "startedAt"
+        | "scheduledDate"
+        | "scheduledTime"
+      >
+    >
+  ) => void;
+  movePoolTask: (activeTaskId: string, overTaskId: string) => void;
+  rescheduleTask: (
+    taskId: string,
+    scheduledDate: string,
+    scheduledTime: string
+  ) => void;
+  cleanupExpiredTasks: () => void;
+
+  // ── 状态机转换 ──────────────────────────────────────────────────────────
+
+  /**
+   * unscheduled → scheduled
+   * 用户将任务拖拽到时间轴上时调用
+   */
+  scheduleTask: (
+    taskId: string,
+    scheduledDate: string,
+    scheduledTime: string
+  ) => void;
+
+  /**
+   * scheduled → unscheduled
+   * 用户将任务从时间轴上移回任务池时调用
+   */
+  unscheduleTask: (taskId: string) => void;
+
+  /**
+   * scheduled → in_progress
+   * 点击「开始专注」时调用；同一时刻只能有一个任务进行中
+   */
+  startTask: (taskId: string) => void;
+
+  /**
+   * in_progress → completed
+   * 专注计时结束 / 用户手动完成时调用。
+   * 结算：将任务快照写入 collection，activeTaskId 清空。
+   */
+  completeTask: (taskId: string) => void;
+
+  /**
+   * in_progress → unfinished
+   * 用户跳过 / 中途放弃时调用。
+   * 结算：任务弹回右侧面板，打上 isUnfinished 标签，activeTaskId 清空。
+   */
+  bounceTask: (taskId: string) => void;
+
+  // ── 结算阶段 ──────────────────────────────────────────────────────────
+
+  /**
+   * 批量结算当天所有 in_progress 任务：
+   *   - completed 的任务 → 飞入 collection
+   *   - 仍是 in_progress 的任务 → 自动 bounce（标记 unfinished，弹回任务池）
+   * 通常在日切换或手动触发「结算」时调用。
+   */
+  settleSession: () => void;
+
+  /** 清空收集瓶（开始新的一天） */
+  clearCollection: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Derived selectors（工厂函数，组件内按需调用）
+// ---------------------------------------------------------------------------
+
+export const taskSelectors = {
+  /** 右侧任务池：unscheduled 或 unfinished 的任务 */
+  poolTasks: (state: TaskState) =>
+    state.tasks.filter(
+      (t) => t.status === "unscheduled" || t.status === "unfinished"
+    ),
+
+  /** 时间轴上的任务：scheduled 或 in_progress */
+  scheduledTasks: (state: TaskState) =>
+    state.tasks.filter(
+      (t) =>
+        t.status === "scheduled" ||
+        t.status === "in_progress" ||
+        t.status === "completed"
+    ),
+
+  /** 已完成任务 */
+  completedTasks: (state: TaskState) =>
+    state.tasks.filter((t) => t.status === "completed"),
+
+  /** 当前进行中的任务实体 */
+  activeTask: (state: TaskState) =>
+    state.tasks.find((t) => t.id === state.activeTaskId) ?? null,
+};
+
+// ---------------------------------------------------------------------------
+// Store implementation
+// ---------------------------------------------------------------------------
+
+type TaskStore = TaskState & TaskActions;
+
+const pad2 = (value: number) => String(value).padStart(2, "0");
+const toLocalDateKey = (date: Date) =>
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+const now = new Date();
+const yesterday = new Date(now);
+yesterday.setDate(yesterday.getDate() - 1);
+const yesterdayKey = toLocalDateKey(yesterday);
+const baseMinutes = 9 * 60;
+const timeFromOffset = (offsetMinutes: number) => {
+  const minutes = Math.min(1439, baseMinutes + offsetMinutes);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${pad2(h)}:${pad2(m)}`;
+};
+
+// 使用固定 ID 和时间戳，避免 SSR 与客户端模块加载时 nanoid/Date.now 产生不同值导致 hydration 不匹配
+const INITIAL_DEMO_TASKS: Task[] = [
+  {
+    id: "demo-1",
+    title: "完成项目需求文档",
+    type: "todo",
+    tag: "工作",
+    duration: 25,
+    status: "scheduled",
+    scheduledDate: yesterdayKey,
+    scheduledTime: timeFromOffset(10),
+    createdAt: Date.now(),
+  },
+  {
+    id: "demo-2",
+    title: "阅读《深度工作》第三章",
+    type: "todo",
+    tag: "学习",
+    duration: 50,
+    status: "scheduled",
+    scheduledDate: yesterdayKey,
+    scheduledTime: timeFromOffset(40),
+    createdAt: Date.now(),
+  },
+  {
+    id: "demo-3",
+    title: "回复团队邮件",
+    type: "todo",
+    tag: "工作",
+    duration: 15,
+    status: "scheduled",
+    scheduledDate: yesterdayKey,
+    scheduledTime: timeFromOffset(75),
+    createdAt: Date.now(),
+  },
+  {
+    id: "demo-4",
+    title: "整理桌面文件",
+    type: "todo",
+    tag: "生活",
+    duration: 20,
+    status: "scheduled",
+    scheduledDate: yesterdayKey,
+    scheduledTime: timeFromOffset(110),
+    createdAt: Date.now(),
+  },
+  {
+    id: "demo-5",
+    title: "晨间冥想",
+    type: "todo",
+    tag: "生活",
+    duration: 10,
+    status: "scheduled",
+    scheduledDate: yesterdayKey,
+    scheduledTime: timeFromOffset(145),
+    createdAt: Date.now(),
+  },
+  // {
+  //   id: "demo-1",
+  //   title: "完成项目需求文档",
+  //   type: "todo",
+  //   tag: "工作",
+  //   duration: 25,
+  //   status: "unscheduled",
+  //   createdAt: 0,
+  // },
+  // {
+  //   id: "demo-2",
+  //   title: "阅读《深度工作》第三章",
+  //   type: "todo",
+  //   tag: "学习",
+  //   duration: 50,
+  //   status: "unscheduled",
+  //   createdAt: 0,
+  // },
+  // {
+  //   id: "demo-3",
+  //   title: "回复团队邮件",
+  //   type: "todo",
+  //   tag: "工作",
+  //   duration: 15,
+  //   status: "unscheduled",
+  //   createdAt: 0,
+  // },
+  // {
+  //   id: "demo-4",
+  //   title: "整理桌面文件",
+  //   type: "todo",
+  //   tag: "生活",
+  //   duration: 20,
+  //   status: "unscheduled",
+  //   createdAt: 0,
+  // },
+  // {
+  //   id: "demo-5",
+  //   title: "晨间冥想",
+  //   type: "todo",
+  //   tag: "生活",
+  //   duration: 10,
+  //   status: "unscheduled",
+  //   createdAt: 0,
+  // },
+];
+export const useTaskStore = create<TaskStore>()(
+  devtools(
+    persist(
+      immer((set) => ({
+      // ── Initial state ──────────────────────────────────────────────────
+
+      tasks: INITIAL_DEMO_TASKS,
+      collection: [],
+      activeTaskId: null,
+
+      // ── Task CRUD ──────────────────────────────────────────────────────
+
+      addTask: ({ title, tag, duration = 25 }) =>
+        set(
+          (state) => {
+            state.tasks.push({
+              id: nanoid(),
+              title,
+              type: "todo",
+              tag,
+              duration,
+              status: "unscheduled",
+              createdAt: Date.now(),
+            });
+          },
+          false,
+          "addTask"
+        ),
+
+      removeTask: (taskId) =>
+        set(
+          (state) => {
+            const idx = state.tasks.findIndex((t) => t.id === taskId);
+            if (idx !== -1) {
+              state.tasks.splice(idx, 1);
+              if (state.activeTaskId === taskId) state.activeTaskId = null;
+            }
+          },
+          false,
+          "removeTask"
+        ),
+
+      updateTask: (taskId, patch) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task) Object.assign(task, patch);
+          },
+          false,
+          "updateTask"
+        ),
+
+      movePoolTask: (activeTaskId, overTaskId) =>
+        set(
+          (state) => {
+            if (activeTaskId === overTaskId) return;
+            const poolIndexes: number[] = [];
+            state.tasks.forEach((task, index) => {
+              if (task.status === "unscheduled" || task.status === "unfinished") {
+                poolIndexes.push(index);
+              }
+            });
+            const poolTasks = poolIndexes.map((index) => state.tasks[index]);
+            const fromIndex = poolTasks.findIndex((task) => task.id === activeTaskId);
+            const toIndex = poolTasks.findIndex((task) => task.id === overTaskId);
+            if (fromIndex === -1 || toIndex === -1) return;
+            const [movedTask] = poolTasks.splice(fromIndex, 1);
+            poolTasks.splice(toIndex, 0, movedTask);
+            poolIndexes.forEach((stateIndex, poolIndex) => {
+              state.tasks[stateIndex] = poolTasks[poolIndex];
+            });
+          },
+          false,
+          "movePoolTask"
+        ),
+
+      rescheduleTask: (taskId, scheduledDate, scheduledTime) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "scheduled") {
+              task.scheduledDate = scheduledDate;
+              task.scheduledTime = scheduledTime;
+              task.isDone = false;
+            }
+          },
+          false,
+          "rescheduleTask"
+        ),
+
+      cleanupExpiredTasks: () =>
+        set(
+          (state) => {
+            const now = Date.now();
+            const todayKey = toLocalDateKey(new Date());
+            state.tasks.forEach((task) => {
+              if (task.status !== "scheduled") return;
+              if (!task.scheduledDate || !task.scheduledTime) return;
+              if (task.scheduledDate !== todayKey) return;
+              const start = new Date(`${task.scheduledDate}T${task.scheduledTime}`);
+              const end = new Date(start);
+              end.setMinutes(end.getMinutes() + (task.duration || 25));
+              if (end.getTime() <= now) {
+                task.status = "unscheduled";
+                task.type = "todo";
+                task.scheduledDate = undefined;
+                task.scheduledTime = undefined;
+                task.startedAt = undefined;
+                task.completedAt = undefined;
+                task.unfinishedAt = undefined;
+                task.isUnfinished = false;
+                task.isDone = false;
+              }
+            });
+          },
+          false,
+          "cleanupExpiredTasks"
+        ),
+
+      // ── State machine ──────────────────────────────────────────────────
+
+      scheduleTask: (taskId, scheduledDate, scheduledTime) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            // 允许从 unscheduled 或 unfinished 状态进入 scheduled
+            if (
+              task &&
+              (task.status === "unscheduled" || task.status === "unfinished")
+            ) {
+              task.status = "scheduled";
+              task.type = "focus";
+              task.scheduledDate = scheduledDate;
+              task.scheduledTime = scheduledTime;
+              task.isDone = false;
+              // 重新排期时清除未完成标签
+              task.isUnfinished = false;
+            }
+          },
+          false,
+          "scheduleTask"
+        ),
+
+      unscheduleTask: (taskId) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "scheduled") {
+              task.status = "unscheduled";
+              task.scheduledDate = undefined;
+              task.scheduledTime = undefined;
+            }
+          },
+          false,
+          "unscheduleTask"
+        ),
+
+      startTask: (taskId) =>
+        set(
+          (state) => {
+            // 同一时刻只能有一个任务进行中：先暂停当前活跃任务（退回 scheduled）
+            if (state.activeTaskId && state.activeTaskId !== taskId) {
+              const current = state.tasks.find(
+                (t) => t.id === state.activeTaskId
+              );
+              if (current && current.status === "in_progress") {
+                current.status = "scheduled";
+              }
+            }
+
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "scheduled") {
+              task.status = "in_progress";
+              task.startedAt = Date.now();
+              state.activeTaskId = taskId;
+            }
+          },
+          false,
+          "startTask"
+        ),
+
+      completeTask: (taskId) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "in_progress") {
+              task.status = "completed";
+              task.completedAt = Date.now();
+              task.isDone = true;
+
+              // 写入收集瓶
+              state.collection.push({
+                taskId: task.id,
+                title: task.title,
+                type: task.type,
+                completedAt: task.completedAt,
+                duration: task.duration,
+              });
+
+              if (state.activeTaskId === taskId) state.activeTaskId = null;
+            }
+          },
+          false,
+          "completeTask"
+        ),
+
+      bounceTask: (taskId) =>
+        set(
+          (state) => {
+            const task = state.tasks.find((t) => t.id === taskId);
+            if (task && task.status === "in_progress") {
+              // 状态机：in_progress → unfinished
+              task.status = "unfinished";
+              task.isUnfinished = true;
+              task.unfinishedAt = Date.now();
+              task.isDone = false;
+
+              // 清除排期信息（弹回任务池后需要重新排期）
+              task.scheduledDate = undefined;
+              task.scheduledTime = undefined;
+              task.startedAt = undefined;
+
+              if (state.activeTaskId === taskId) state.activeTaskId = null;
+            }
+          },
+          false,
+          "bounceTask"
+        ),
+
+      // ── Settlement ────────────────────────────────────────────────────
+
+      settleSession: () =>
+        set(
+          (state) => {
+            const now = Date.now();
+
+            state.tasks.forEach((task) => {
+              if (task.status === "in_progress") {
+                // 仍在进行中的任务视为未完成，自动弹回任务池
+                task.status = "unfinished";
+                task.isUnfinished = true;
+                task.unfinishedAt = now;
+                task.scheduledDate = undefined;
+                task.scheduledTime = undefined;
+                task.startedAt = undefined;
+              }
+            });
+
+            state.activeTaskId = null;
+          },
+          false,
+          "settleSession"
+        ),
+
+      clearCollection: () =>
+        set(
+          (state) => {
+            state.collection = [];
+          },
+          false,
+          "clearCollection"
+        ),
+      })),
+      {
+        name: "maoping-task-store",
+        skipHydration: true,
+        storage:
+          typeof window !== "undefined"
+            ? createJSONStorage(() => localStorage)
+            : createJSONStorage(() => ({
+                getItem: () => null,
+                setItem: () => {},
+                removeItem: () => {},
+              })),
+        partialize: (s) => ({ tasks: s.tasks, collection: s.collection, activeTaskId: s.activeTaskId }),
+      }
+    ),
+    { name: "TaskStore" }
+  )
+);

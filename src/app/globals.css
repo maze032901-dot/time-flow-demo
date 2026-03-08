@@ -1,8 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f8f7f4;
+  --foreground: #1a1a1a;
+  --panel-bg: #ffffff;
+  --border-color: #e8e6e0;
+  --accent: #6366f1;
+  --accent-light: #eef2ff;
+  --text-muted: #9ca3af;
+  --text-secondary: #6b7280;
+  --header-height: 60px;
+  --control-bar-height: 100px;
+  --scrollbar-width: 6px;
 }
 
 @theme inline {
@@ -12,15 +21,109 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Prevent overflow on small screens */
+@media (max-width: 640px) {
+  body {
+    overflow-x: hidden;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Time axis hour line */
+.time-hour-line {
+  border-top: 1px solid var(--border-color);
+}
+
+.time-quarter-line {
+  border-top: 1px dashed #f0ede8;
+}
+
+/* Shake animation for collision rejection */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  12% { transform: translateX(-6px); }
+  25% { transform: translateX(6px); }
+  37% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  62% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+  87% { transform: translateX(-1px); }
+}
+
+.animate-shake {
+  animation: shake 0.6s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+/* Overdue bell red breathing indicator */
+@keyframes overdue-blink {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.25);
+  }
+}
+
+.animate-overdue-blink {
+  animation: overdue-blink 1.6s ease-in-out infinite;
+}
+
+@keyframes bottle-pop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.16);
+  }
+  70% {
+    transform: scale(0.94);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-bottle-pop {
+  animation: bottle-pop 0.28s ease-out;
 }
