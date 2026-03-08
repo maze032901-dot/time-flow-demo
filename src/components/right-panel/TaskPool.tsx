@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Filter, Clock, CheckSquare, Tag } from "lucide-react";
+import { Plus, Filter, Clock, CheckSquare, Tag, TriangleAlert } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
@@ -148,6 +148,7 @@ function DraggableTaskCard({
     tag: ScenarioTag;
     duration?: number;
     isUnfinished?: boolean;
+    isMissedFocus?: boolean;
   };
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
@@ -175,19 +176,24 @@ function TaskCard({
     tag: ScenarioTag;
     duration?: number;
     isUnfinished?: boolean;
+    isMissedFocus?: boolean;
   };
 }) {
   const typeConf = TYPE_CONFIG[task.type];
 
   return (
     <div
-      className="group p-3 rounded-xl border cursor-grab active:cursor-grabbing transition-all hover:shadow-sm"
+      className="group rounded-xl border px-3 py-2.5 cursor-grab active:cursor-grabbing transition-all hover:shadow-sm"
       style={{
         borderColor: "var(--border-color)",
         backgroundColor: "var(--panel-bg)",
       }}
     >
       <div className="flex items-start gap-2">
+        <div
+          className="w-1.5 rounded-full self-stretch"
+          style={{ backgroundColor: TAG_COLORS[task.tag] }}
+        />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium leading-snug truncate">
             {task.title}
@@ -218,9 +224,10 @@ function TaskCard({
                 {task.duration}min
               </span>
             )}
-            {task.isUnfinished && (
-              <span className="inline-flex px-1.5 py-0.5 rounded-md text-xs font-semibold bg-red-50 text-red-500">
-                未完成
+            {task.isMissedFocus && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs font-semibold border bg-yellow-50 text-yellow-700 border-yellow-200">
+                <TriangleAlert size={10} />
+                已错过
               </span>
             )}
           </div>

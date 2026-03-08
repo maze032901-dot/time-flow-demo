@@ -2,23 +2,21 @@
 
 import { useRef, useEffect, useState } from "react";
 import { useDndMonitor, useDraggable, useDroppable } from "@dnd-kit/core";
-import { ChevronUp, ChevronDown, ChevronsUpDown } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, TriangleAlert, CheckCircle } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useTaskStore, taskSelectors } from "@/store/useTaskStore";
 import type { Task } from "@/types/task";
+import {
+  BASE_MINUTE_PX,
+  PADDING_TOP,
+  LABEL_WIDTH,
+  MIN_HEIGHT_FOR_TITLE_AND_TIME,
+} from "@/components/left-panel/timeAxisConstants";
 import {
   getDropMinuteFromTranslatedRect,
   isPastDropMinute,
   minutesToTime,
 } from "@/utils/timelineDnd";
-
-// ─────────────────────────────────────────────
-// Layout constants
-// ─────────────────────────────────────────────
-
-export const BASE_MINUTE_PX = 80 / 60;
-export const PADDING_TOP = 20;
-export const LABEL_WIDTH = 64;
 
 const TAG_COLORS: Record<string, string> = {
   工作: "#f59e0b",
@@ -122,8 +120,8 @@ export default function TimeAxis({
 }: TimeAxisProps) {
   const scheduledTasks = useTaskStore(useShallow(taskSelectors.scheduledTasks));
   const allTasks = useTaskStore((s) => s.tasks);
-  const cleanupExpiredTasks = useTaskStore((s) => s.cleanupExpiredTasks);
   const unscheduleTask = useTaskStore((s) => s.unscheduleTask);
+  const updateTask = useTaskStore((s) => s.updateTask);
   const nowRef = useRef<HTMLDivElement>(null);
   const previousDateRef = useRef<string | null>(null);
   const [nowMinutes, setNowMinutes] = useState(getCurrentMinutes);
@@ -173,6 +171,34 @@ export default function TimeAxis({
     top: 0,
     placement: "top",
   });
+
+  const cleanUnstartedFocusToPool = () => {
+    const targets = scheduledTasks.filter((task) => {
+      if (task.type !== "focus") return false;
+      if (task.status !== "scheduled") return false;
+      if (task.scheduledDate !== selectedDate) return false;
+      if (!task.scheduledTime) return false;
+      if (task.startedAt) return false;
+      const startMin = timeToMinutes(task.scheduledTime);
+      const endMin = startMin + (task.duration || 25);
+      if (isPastDate) return true;
+      if (isToday) return endMin <= nowMinutes;
+      return false;
+    });
+    targets.forEach((task) => {
+      updateTask(task.id, {
+        status: "unscheduled",
+        scheduledDate: undefined,
+        scheduledTime: undefined,
+        startedAt: undefined,
+        completedAt: undefined,
+        isMissedFocus: false,
+        isDone: false,
+        isUnfinished: false,
+      });
+    });
+    setContextMenu(null);
+  };
 
   const renderAxisFloatingTime = (
     minutes: number,
@@ -253,7 +279,8 @@ export default function TimeAxis({
         });
       const edges = otherTasks.flatMap((t) => [t.start, t.end]);
       const minDuration = 5;
-      const edgeThreshold = 8;
+      const moveEdgeThreshold = 8;
+      const resizeEdgeThreshold = 1;
       const gridStep = 15;
       const gridThreshold = 6;
       let start = activeTimeline.originStart;
@@ -285,8 +312,8 @@ export default function TimeAxis({
           nextStart -= overflow;
           nextEnd = 1440;
         }
-        const snapStart = snapToEdges(nextStart, edges, edgeThreshold);
-        const snapEnd = snapToEdges(nextEnd, edges, edgeThreshold);
+        const snapStart = snapToEdges(nextStart, edges, moveEdgeThreshold);
+        const snapEnd = snapToEdges(nextEnd, edges, moveEdgeThreshold);
         if (Math.abs(snapStart - nextStart) <= Math.abs(snapEnd - nextEnd)) {
           nextStart = snapStart;
           nextEnd = nextStart + duration;
@@ -306,30 +333,30 @@ export default function TimeAxis({
         start = Math.max(0, Math.min(1440 - duration, nextStart));
         end = start + duration;
       } else if (activeTimeline.mode === "resize-top") {
-        const nextStartRaw = start + deltaMinutes;
-        // 1. 先不设上下限，允许自由拖动
-        let nextStart = nextStartRaw;
-        // 2. 边缘吸附（如果需要）
-        nextStart = snapToEdges(nextStart, edges, edgeThreshold);
-        // 3. 移除 gridStep 吸附，实现 1 分钟精确控制
-        // nextStart = snapToGrid(nextStart, gridStep, gridThreshold);
-        
-        // 4. 最后做逻辑约束：不能小于 0，且不能超过结束时间（预留 minDuration）
+        const container = timelineRef.current;
+        const translated = event.active.rect.current.translated;
+        let nextStart = start + deltaMinutes;
+        if (container && translated) {
+          const rect = container.getBoundingClientRect();
+          nextStart = Math.round(
+            (translated.top - rect.top + container.scrollTop - PADDING_TOP) / minutePx
+          );
+        }
+        nextStart = snapToEdges(nextStart, edges, resizeEdgeThreshold);
         nextStart = Math.max(0, Math.min(end - minDuration, nextStart));
-        
         start = nextStart;
       } else {
-        const nextEndRaw = end + deltaMinutes;
-        // 1. 先不设上下限
-        let nextEnd = nextEndRaw;
-        // 2. 边缘吸附
-        nextEnd = snapToEdges(nextEnd, edges, edgeThreshold);
-        // 3. 移除 gridStep 吸附，实现 1 分钟精确控制
-        // nextEnd = snapToGrid(nextEnd, gridStep, gridThreshold);
-        
-        // 4. 最后做逻辑约束：不能超过 1440，且不能小于开始时间（预留 minDuration）
+        const container = timelineRef.current;
+        const translated = event.active.rect.current.translated;
+        let nextEnd = end + deltaMinutes;
+        if (container && translated) {
+          const rect = container.getBoundingClientRect();
+          nextEnd = Math.round(
+            (translated.bottom - rect.top + container.scrollTop - PADDING_TOP) / minutePx
+          );
+        }
+        nextEnd = snapToEdges(nextEnd, edges, resizeEdgeThreshold);
         nextEnd = Math.min(1440, Math.max(start + minDuration, nextEnd));
-        
         end = nextEnd;
       }
       const overlap = checkTimelineOverlap(start, end, otherTasks);
@@ -426,7 +453,7 @@ export default function TimeAxis({
         const container = event.currentTarget;
         const rect = container.getBoundingClientRect();
         const yInViewport = event.clientY - rect.top;
-        const edgeThreshold = 28;
+        const edgeThreshold = 16;
         const isDraggingTimelineTask = Boolean(activeTimeline) || isDraggingTask;
         if (!isDraggingTimelineTask) {
           if (edgeControl.visible) {
@@ -554,6 +581,8 @@ export default function TimeAxis({
                 isShaking={shakeTaskId === task.id}
                 minutePx={minutePx}
                 isPastDate={isPastDate}
+                isToday={isToday}
+                nowMinutes={nowMinutes}
                 projection={projection?.taskId === task.id ? projection : null}
                 isActive={activeTimeline?.taskId === task.id}
               />
@@ -569,7 +598,7 @@ export default function TimeAxis({
           >
             <div className="w-16 shrink-0 flex justify-end pr-[9px]">
               <div
-                className="w-3 h-3 rounded-full bg-red-500 shrink-0"
+                className="w-3 h-3 rounded-full bg-red-500 shrink-0 animate-time-breath"
                 style={{
                   boxShadow: "0 0 0 3px rgba(239,68,68,0.2), 0 0 8px rgba(239,68,68,0.4)",
                 }}
@@ -642,11 +671,10 @@ export default function TimeAxis({
             className="w-full px-2.5 py-2 rounded-lg text-sm text-left transition-colors hover:bg-gray-50"
             style={{ color: "var(--text-secondary)" }}
             onClick={() => {
-              cleanupExpiredTasks();
-              setContextMenu(null);
+              cleanUnstartedFocusToPool();
             }}
           >
-            Clean Expired Tasks & Return to Pool
+            Clean to Pool
           </button>
         </div>
       )}
@@ -676,6 +704,8 @@ function ScheduledCard({
   isShaking,
   minutePx,
   isPastDate,
+  isToday,
+  nowMinutes,
   projection,
   isActive,
 }: {
@@ -683,6 +713,8 @@ function ScheduledCard({
   isShaking: boolean;
   minutePx: number;
   isPastDate: boolean;
+  isToday: boolean;
+  nowMinutes: number;
   projection: { start: number; end: number; forbidden: boolean } | null;
   isActive: boolean;
 }) {
@@ -727,8 +759,25 @@ function ScheduledCard({
   const isScheduled = task.status === "scheduled";
   const isCompletedFocus =
     task.type === "focus" && task.status === "completed" && Boolean(task.isDone);
+  const isRuntimeMissed = isPastDate || (isToday && endMin <= nowMinutes);
+  const isOverdueFocus =
+    task.type === "focus" &&
+    !task.isDone &&
+    task.status !== "completed" &&
+    isRuntimeMissed;
   const tintAlpha = isPastDate ? 0.08 : 0.14;
   const isForbidden = projection?.forbidden ?? false;
+  const timeLabel =
+    task.type === "focus"
+      ? `${toTimeLabel(Math.max(0, Math.min(1440, startMin)))} - ${toTimeLabel(
+          Math.max(0, Math.min(1440, endMin))
+        )}`
+      : null;
+  const minDurationForTitleAndTime = Math.ceil(MIN_HEIGHT_FOR_TITLE_AND_TIME / minutePx);
+  const showTimeLabel =
+    Boolean(timeLabel) &&
+    (endMin - startMin) >= minDurationForTitleAndTime &&
+    height >= MIN_HEIGHT_FOR_TITLE_AND_TIME;
 
   return (
     <div
@@ -739,28 +788,24 @@ function ScheduledCard({
         top: `${top + 1}px`,
         height: `${height - 2}px`,
         zIndex: isActive ? 40 : 10,
-        borderColor: isCompletedFocus
-          ? "#22c55e"
-          : isForbidden
+        borderColor: isForbidden
           ? "#ef4444"
           : isShaking
             ? "#ef4444"
             : "var(--border-color)",
-        backgroundColor: isCompletedFocus
-          ? "rgba(220,252,231,0.8)"
-          : isForbidden
+        backgroundColor: isForbidden
           ? "rgba(254,226,226,0.8)"
           : isShaking
             ? "#fff1f2"
             : hexToRgba(tagColor, tintAlpha),
         boxShadow: "0 1px 4px rgba(0,0,0,0.05)",
-        opacity: isPastDate ? 0.65 : 1,
+        opacity: 1,
         cursor: isLocked ? "not-allowed" : isForbidden ? "not-allowed" : "grab",
       }}
     >
       <div
         className="absolute left-0 right-0 top-0 h-1"
-        style={{ backgroundColor: isCompletedFocus ? "#22c55e" : tagColor }}
+        style={{ backgroundColor: tagColor }}
       />
       {!isLocked && (
         <>
@@ -768,17 +813,17 @@ function ScheduledCard({
             ref={dragRef}
             {...dragListeners}
             {...dragAttributes}
-            className="absolute left-1.5 right-1.5 top-5 bottom-5 rounded-lg cursor-grab active:cursor-grabbing"
+            className="absolute inset-1 rounded-lg cursor-grab active:cursor-grabbing z-40"
             style={{ touchAction: "none" }}
           />
           <div
             ref={resizeTopRef}
             {...resizeTopListeners}
             {...resizeTopAttributes}
-            className="absolute left-0 right-0 top-0 h-4 cursor-ns-resize z-50 flex justify-center items-start pt-0.5 group/resize hover:bg-black/5 transition-colors"
+            className="absolute left-0 right-0 top-0 h-2 cursor-ns-resize z-50 flex justify-center items-start group/resize hover:bg-black/5 transition-colors"
             style={{ touchAction: "none" }}
           >
-            <div className="bg-white/90 rounded-full shadow-sm p-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-black/5">
+            <div className="bg-white/90 rounded-full shadow-sm p-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-black/5 scale-75 origin-top">
               <ChevronsUpDown size={10} className="text-gray-500" />
             </div>
           </div>
@@ -786,37 +831,59 @@ function ScheduledCard({
             ref={resizeBottomRef}
             {...resizeBottomListeners}
             {...resizeBottomAttributes}
-            className="absolute left-0 right-0 bottom-0 h-4 cursor-ns-resize z-50 flex justify-center items-end pb-0.5 group/resize hover:bg-black/5 transition-colors"
+            className="absolute left-0 right-0 bottom-0 h-2 cursor-ns-resize z-50 flex justify-center items-end group/resize hover:bg-black/5 transition-colors"
             style={{ touchAction: "none" }}
           >
-            <div className="bg-white/90 rounded-full shadow-sm p-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-black/5">
+            <div className="bg-white/90 rounded-full shadow-sm p-0.5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none border border-black/5 scale-75 origin-bottom">
               <ChevronsUpDown size={10} className="text-gray-500" />
             </div>
           </div>
         </>
       )}
       <div className="absolute inset-0 pt-1 pl-3 pr-1.5 flex items-center gap-1.5">
-        <span
-          className="flex-1 font-semibold truncate"
-          style={{
-            color: isPastDate ? "var(--text-secondary)" : "var(--foreground)",
-            fontSize: 11,
-            textDecoration: isPastDate ? "line-through" : "none",
-          }}
-        >
-          {task.title}
-        </span>
-        {task.isDone && (
-          <span
-            className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold"
-            style={{
-              backgroundColor: isCompletedFocus ? "#bbf7d0" : "#dcfce7",
-              color: "#15803d",
-            }}
-          >
-            {isCompletedFocus ? "Focus 已完成" : "Done"}
-          </span>
-        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {isOverdueFocus && (
+              <span
+                className="shrink-0 w-4 h-4 rounded flex items-center justify-center"
+                style={{ backgroundColor: "#fef3c7", color: "#d97706" }}
+                title="该专注任务未完成"
+              >
+                <TriangleAlert size={11} />
+              </span>
+            )}
+            {isCompletedFocus && (
+              <span
+                className="shrink-0 w-4 h-4 rounded flex items-center justify-center"
+                style={{ backgroundColor: "#dcfce7", color: "#16a34a" }}
+                title="专注已完成"
+              >
+                <CheckCircle size={11} />
+              </span>
+            )}
+            <p
+              className="font-semibold truncate"
+              style={{
+                color: "var(--foreground)",
+                fontSize: 11,
+              }}
+            >
+              {task.title}
+            </p>
+          </div>
+          {showTimeLabel && (
+            <p
+              className="mt-0.5 truncate"
+              style={{
+                color: "var(--text-muted)",
+                fontSize: 10,
+                lineHeight: 1.2,
+              }}
+            >
+              {timeLabel}
+            </p>
+          )}
+        </div>
         {height > 36 && (
           <span className="shrink-0 tabular-nums text-[10px]" style={{ color: "var(--text-muted)" }}>
             {Math.round(endMin - startMin)}m
@@ -824,7 +891,7 @@ function ScheduledCard({
         )}
         {isScheduled && !isLocked && (
           <button
-            className="shrink-0 w-5 h-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-100"
+            className="relative z-50 shrink-0 w-5 h-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-100"
             style={{ color: "#ef4444", fontSize: 15, lineHeight: 1 }}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={() => unscheduleTask(task.id)}

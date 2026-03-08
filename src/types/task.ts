@@ -55,6 +55,7 @@ export interface Task {
    * 用于在右侧面板渲染"未完成"徽章
    */
   isUnfinished?: boolean;
+  isMissedFocus?: boolean;
 
   /** 任务创建时间 */
   createdAt: number;

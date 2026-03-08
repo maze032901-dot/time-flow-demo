@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Sparkles, Droplets, Pencil, Trash2, X } from "lucide-react";
+import { Plus, Sparkles, Droplets, Pencil, Trash2, X, TriangleAlert } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { useSortable, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
@@ -44,6 +44,7 @@ type PoolTask = {
   tag: ScenarioTag;
   duration?: number;
   isUnfinished?: boolean;
+  isMissedFocus?: boolean;
 };
 
 type ContextMenuState = {
@@ -511,23 +512,28 @@ function TaskCard({
 }) {
   const typeConf = TYPE_CONFIG[task.type];
   const scenarioConf = SCENARIO_CONFIG[task.tag];
-  const removeTask = useTaskStore((s) => s.removeTask);
+  const updateTask = useTaskStore((s) => s.updateTask);
   const [isChecked, setIsChecked] = useState(false);
   const removeTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!isChecked) return;
     removeTimerRef.current = window.setTimeout(() => {
-      removeTask(task.id);
+      updateTask(task.id, {
+        status: "completed",
+        completedAt: Date.now(),
+        isDone: true,
+        isUnfinished: false,
+      });
     }, 320);
     return () => {
       if (removeTimerRef.current) window.clearTimeout(removeTimerRef.current);
     };
-  }, [isChecked, removeTask, task.id]);
+  }, [isChecked, updateTask, task.id]);
 
   return (
     <div
-      className="relative flex overflow-hidden rounded-xl border cursor-grab active:cursor-grabbing transition-all hover:shadow-sm"
+      className="rounded-xl border px-3 py-2.5 cursor-grab active:cursor-grabbing transition-all hover:shadow-sm"
       style={{
         borderColor: isDragging ? `${scenarioConf.color}80` : "var(--border-color)",
         backgroundColor: isDragging ? `${scenarioConf.color}14` : "var(--panel-bg)",
@@ -541,17 +547,12 @@ function TaskCard({
         transition: "opacity 220ms ease, transform 220ms ease, box-shadow 150ms ease",
       }}
     >
-      <div
-        className="w-1 shrink-0 rounded-l-xl"
-        style={{
-          backgroundColor: scenarioConf.color,
-          width: isDragging ? 6 : 4,
-          transition: "width 150ms ease",
-        }}
-      />
-
-      <div className="flex-1 px-3 py-2.5 min-w-0">
-        <div className="flex items-start gap-2">
+      <div className="flex items-start gap-2">
+        <div
+          className="w-1.5 rounded-full self-stretch"
+          style={{ backgroundColor: scenarioConf.color }}
+        />
+        <div className="flex-1 min-w-0 flex items-start gap-2">
           {task.type === "todo" && (
             <button
               onPointerDown={(event) => event.stopPropagation()}
@@ -589,12 +590,6 @@ function TaskCard({
               </svg>
             </button>
           )}
-          <span
-            className="shrink-0 flex items-center justify-center w-6 h-6 rounded-lg"
-            style={{ backgroundColor: typeConf.bg, color: typeConf.color }}
-          >
-            {typeConf.icon}
-          </span>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium leading-snug line-clamp-2">
               <span
@@ -628,9 +623,18 @@ function TaskCard({
                   {task.duration}m
                 </span>
               )}
-              {task.isUnfinished && (
-                <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-semibold bg-red-50 text-red-500 border border-red-200">
-                  Unfinished
+              {task.isMissedFocus && (
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-semibold border"
+                  style={{
+                    backgroundColor: "#fef9c3",
+                    color: "#a16207",
+                    borderColor: "#fde68a",
+                  }}
+                  title="该专注任务已错过"
+                >
+                  <TriangleAlert size={10} />
+                  Missed
                 </span>
               )}
             </div>

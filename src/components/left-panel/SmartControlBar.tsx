@@ -5,11 +5,19 @@ import { useState, useEffect, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import { useTaskStore, taskSelectors } from "@/store/useTaskStore";
+import { playSound } from "@/utils/sound";
 import type { Task } from "@/types/task";
+
 import WaterBottleAnimation from "@/components/common/WaterBottleAnimation";
 
 type Status = "idle" | "focusing" | "paused";
-type ToastItem = { id: string; taskId: string; title: string; time: string };
+type ToastItem = {
+  id: string;
+  taskId: string;
+  title: string;
+  startsAt: string;
+  minutesLeft: number;
+};
 
 function isTaskOverdue(task: Task): boolean {
   if (!task.scheduledTime || !task.scheduledDate) return false;
@@ -35,6 +43,12 @@ function toDateKey(date: Date): string {
 
 function toTimeKey(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function toTimeWithOffset(date: Date, offsetMinutes: number) {
+  const copy = new Date(date);
+  copy.setMinutes(copy.getMinutes() + offsetMinutes);
+  return toTimeKey(copy);
 }
 
 function formatElapsed(seconds: number) {
@@ -185,32 +199,33 @@ function ToastStack({
 }) {
   if (items.length === 0) return null;
   return (
-    <div className="fixed top-5 right-6 z-[90] flex flex-col gap-2">
+    <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[95] flex flex-col gap-3 w-[min(92vw,560px)]">
       {items.map((toast) => (
         <div
           key={toast.id}
-          className="flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg"
+          className="flex items-center gap-4 px-5 py-4 rounded-2xl border shadow-2xl"
           style={{
             backgroundColor: "var(--panel-bg)",
             borderColor: "var(--border-color)",
+            boxShadow: "0 12px 28px rgba(15,23,42,0.18)",
           }}
         >
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold truncate">{toast.title}</p>
-            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-              {toast.time} 开始
+            <p className="text-base font-semibold truncate">{toast.title}</p>
+            <p className="text-sm mt-1" style={{ color: "var(--text-muted)" }}>
+              {toast.startsAt} 开始 · {toast.minutesLeft <= 0 ? "现在开始" : `${toast.minutesLeft} 分钟后`}
             </p>
           </div>
           <button
             onClick={() => onStart(toast.taskId)}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95"
+            className="px-4 py-2 rounded-xl text-sm font-semibold transition-all active:scale-95"
             style={{ backgroundColor: "#6366f1", color: "#fff" }}
           >
-            开始专注
+            立即开始专注
           </button>
           <button
             onClick={() => onDismiss(toast.id)}
-            className="text-xs px-2 py-1 rounded-lg transition-colors hover:bg-gray-50"
+            className="text-sm px-3 py-2 rounded-xl transition-colors hover:bg-gray-50"
             style={{ color: "var(--text-muted)" }}
           >
             稍后
@@ -227,38 +242,99 @@ function useTaskNotifications(
 ) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const firedRef = useRef<Set<string>>(new Set());
+  const firedStartRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const tick = async () => {
       const now = new Date();
       const nowDate = toDateKey(now);
-      const nowTime = toTimeKey(now);
-      const dueTasks = scheduledTasks.filter(
-        (task) =>
-          task.status === "scheduled" &&
-          Boolean(task.scheduledDate) &&
-          Boolean(task.scheduledTime) &&
-          task.scheduledDate === nowDate &&
-          task.scheduledTime === nowTime
-      );
+      const nowMs = now.getTime();
+      const dueTasks = scheduledTasks.filter((task) => {
+        if (
+          task.status !== "scheduled" ||
+          task.type !== "focus" ||
+          !task.scheduledDate ||
+          !task.scheduledTime ||
+          task.scheduledDate !== nowDate
+        ) {
+          return false;
+        }
+        const start = new Date(`${task.scheduledDate}T${task.scheduledTime}`).getTime();
+        const diff = start - nowMs;
+        return diff >= 0 && diff <= 2 * 60 * 1000;
+      });
       for (const task of dueTasks) {
         if (!task.scheduledDate || !task.scheduledTime) continue;
-        const time = task.scheduledTime;
+        const startsAt = task.scheduledTime;
+        const start = new Date(`${task.scheduledDate}T${task.scheduledTime}`).getTime();
+        const minutesLeft = Math.max(0, Math.ceil((start - nowMs) / 60000));
         const key = `${task.id}-${task.scheduledDate}-${task.scheduledTime}`;
         if (firedRef.current.has(key)) continue;
         firedRef.current.add(key);
         setToasts((prev) => [
           ...prev.filter((item) => item.id !== key),
-          { id: key, taskId: task.id, title: task.title, time },
+          {
+            id: key,
+            taskId: task.id,
+            title: task.title,
+            startsAt,
+            minutesLeft,
+          },
         ]);
+        playSound("notice");
         setTimeout(() => {
           setToasts((prev) => prev.filter((item) => item.id !== key));
-        }, 8000);
+        }, 12000);
         if (document.hidden) {
           const permission = await ensureNotificationPermission();
           if (permission === "granted") {
             new Notification("任务开始提醒", {
-              body: `${task.title} · ${task.scheduledTime}`,
+              body: `${task.title} · ${task.scheduledTime} 开始`,
+            });
+            playChime();
+          }
+        }
+      }
+
+      const startingTasks = scheduledTasks.filter((task) => {
+        if (
+          task.status !== "scheduled" ||
+          task.type !== "focus" ||
+          !task.scheduledDate ||
+          !task.scheduledTime ||
+          task.scheduledDate !== nowDate
+        ) {
+          return false;
+        }
+        const start = new Date(`${task.scheduledDate}T${task.scheduledTime}`).getTime();
+        const diff = nowMs - start;
+        return diff >= 0 && diff <= 30_000;
+      });
+      for (const task of startingTasks) {
+        if (!task.scheduledDate || !task.scheduledTime) continue;
+        const startsAt = task.scheduledTime;
+        const startKey = `${task.id}-${task.scheduledDate}-${task.scheduledTime}-start`;
+        if (firedStartRef.current.has(startKey)) continue;
+        firedStartRef.current.add(startKey);
+        setToasts((prev) => [
+          ...prev.filter((item) => item.id !== startKey),
+          {
+            id: startKey,
+            taskId: task.id,
+            title: task.title,
+            startsAt,
+            minutesLeft: 0,
+          },
+        ]);
+        playSound("notice");
+        setTimeout(() => {
+          setToasts((prev) => prev.filter((item) => item.id !== startKey));
+        }, 12000);
+        if (document.hidden) {
+          const permission = await ensureNotificationPermission();
+          if (permission === "granted") {
+            new Notification("专注已开始提醒", {
+              body: `${task.title} · 已开始专注`,
             });
             playChime();
           }
@@ -266,7 +342,7 @@ function useTaskNotifications(
       }
     };
     tick();
-    const id = setInterval(tick, 15_000);
+    const id = setInterval(tick, 5_000);
     return () => clearInterval(id);
   }, [scheduledTasks]);
 
@@ -357,10 +433,125 @@ export default function SmartControlBar() {
   useTaskGarbageCollection(cleanupExpiredTasks);
 
   useEffect(() => {
+    useTaskStore.setState((state) => {
+      state.tasks.forEach((task) => {
+        if (task.status === "in_progress") {
+          task.status = "scheduled";
+          task.startedAt = undefined;
+          task.isDone = false;
+          task.isMissedFocus = false;
+        }
+        if (task.status === "unfinished") {
+          task.status = "scheduled";
+          task.isUnfinished = false;
+        }
+      });
+      state.activeTaskId = null;
+      const now = new Date();
+      const today = toDateKey(now);
+      const yesterday = new Date(now);
+      yesterday.setDate(now.getDate() - 1);
+      const yesterdayKey = toDateKey(yesterday);
+      state.tasks = state.tasks.filter(
+        (task) => !task.id.startsWith("preview-focus-")
+      );
+      const plan = [
+        { id: "demo-1", offset: 5, duration: 20, missed: false, completed: false },
+        { id: "demo-2", offset: 30, duration: 25, missed: false, completed: true },
+        { id: "demo-3", offset: 70, duration: 20, missed: false, completed: false },
+        { id: "demo-4", offset: -40, duration: 15, missed: true, completed: false },
+        
+      ];
+      plan.forEach((item) => {
+        const target = state.tasks.find((task) => task.id === item.id);
+        if (!target) return;
+        target.type = "focus";
+        target.status = item.completed ? "completed" : "scheduled";
+        target.duration = item.duration;
+        target.scheduledDate = today;
+        target.scheduledTime = toTimeWithOffset(now, item.offset);
+        target.isMissedFocus = item.missed;
+        target.isDone = item.completed;
+        target.isUnfinished = false;
+        target.completedAt = item.completed ? Date.now() : undefined;
+        target.startedAt = undefined;
+      });
+
+      const yesterdayPlan = [
+        {
+          id: "demo-y1",
+          title: "整理笔记与待办",
+          tag: "工作" as const,
+          duration: 25,
+          status: "completed" as const,
+          scheduledTime: "09:00",
+          completedAt: Date.now() - 85000000,
+        },
+        {
+          id: "demo-y2",
+          title: "阅读《深度工作》",
+          tag: "学习" as const,
+          duration: 30,
+          status: "completed" as const,
+          scheduledTime: "14:00",
+          completedAt: Date.now() - 82000000,
+        },
+        {
+          id: "demo-y3",
+          title: "夜跑 5 公里",
+          tag: "生活" as const,
+          duration: 40,
+          status: "completed" as const,
+          scheduledTime: "20:00",
+          completedAt: Date.now() - 79000000,
+        },
+        {
+          id: "demo-y4",
+          title: "写周报",
+          tag: "工作" as const,
+          duration: 20,
+          status: "scheduled" as const,
+          scheduledTime: "16:00",
+        },
+      ];
+      yesterdayPlan.forEach((item) => {
+        const target = state.tasks.find((task) => task.id === item.id);
+        if (target) {
+          target.type = "focus";
+          target.status = item.status;
+          target.tag = item.tag;
+          target.duration = item.duration;
+          target.scheduledDate = yesterdayKey;
+          target.scheduledTime = item.scheduledTime;
+          target.completedAt = "completedAt" in item ? item.completedAt : undefined;
+          target.isUnfinished = false;
+          target.isDone = item.status === "completed";
+          return;
+        }
+        state.tasks.push({
+          id: item.id,
+          title: item.title,
+          type: "focus",
+          tag: item.tag,
+          duration: item.duration,
+          status: item.status,
+          scheduledDate: yesterdayKey,
+          scheduledTime: item.scheduledTime,
+          createdAt: Date.now() - 86400000,
+          completedAt: "completedAt" in item ? item.completedAt : undefined,
+          isUnfinished: false,
+          isDone: item.status === "completed",
+        });
+      });
+    });
+  }, []);
+
+  useEffect(() => {
     const check = () =>
       setExpiredTaskCount(
-        scheduledTasks.filter((t) => t.status === "scheduled" && isTaskOverdue(t))
-          .length
+        scheduledTasks.filter(
+          (t) => t.type === "focus" && t.status === "scheduled" && isTaskOverdue(t)
+        ).length
       );
     check();
     const id = setInterval(check, 60_000);

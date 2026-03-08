@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, CalendarDays, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, CalendarDays, ZoomIn, ZoomOut, LocateFixed } from "lucide-react";
 
 const DAYS = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -18,11 +18,13 @@ export default function TopHeader({
   onZoomChange,
   currentDate,
   onDateChange,
+  onLocateNow,
 }: {
   zoom: number;
   onZoomChange: (next: number) => void;
   currentDate: Date;
   onDateChange: (next: Date) => void;
+  onLocateNow: () => void;
 }) {
   const { year, month, day, weekday } = formatDate(currentDate);
 
@@ -80,6 +82,15 @@ export default function TopHeader({
       </div>
 
       <div className="flex items-center gap-3">
+        <button
+          onClick={onLocateNow}
+          className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
+          style={{ color: "var(--text-secondary)" }}
+          aria-label="定位当前时间"
+          title="定位当前时间"
+        >
+          <LocateFixed size={16} />
+        </button>
         <div className="flex items-center gap-1">
           <button
             onClick={() => onZoomChange(zoom - 0.15)}

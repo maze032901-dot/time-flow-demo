@@ -17,7 +17,7 @@ import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import dynamic from "next/dynamic";
 import TopHeader from "@/components/left-panel/TopHeader";
-import TimeAxis, { BASE_MINUTE_PX, PADDING_TOP } from "@/components/left-panel/TimeAxis";
+import { BASE_MINUTE_PX, PADDING_TOP } from "@/components/left-panel/timeAxisConstants";
 import SmartControlBar from "@/components/left-panel/SmartControlBar";
 import { useTaskStore } from "@/store/useTaskStore";
 import type { Task } from "@/types/task";
@@ -35,6 +35,9 @@ const SCENARIO_COLORS: Record<string, string> = {
 };
 
 const RightPanel = dynamic(() => import("@/components/right-panel/RightPanel"), {
+  ssr: false,
+});
+const TimeAxis = dynamic(() => import("@/components/left-panel/TimeAxis"), {
   ssr: false,
 });
 
@@ -148,6 +151,30 @@ export default function Home() {
     setActiveDragTask(task);
   }
 
+  const scrollToNow = () => {
+    const container = timelineRef.current;
+    if (!container) return;
+    const nowMinutes = getNowMinutes();
+    const minutePx = BASE_MINUTE_PX * zoom;
+    const totalHeight = 24 * 60 * minutePx + PADDING_TOP * 2;
+    const targetTop = nowMinutes * minutePx + PADDING_TOP;
+    const maxScroll = Math.max(0, totalHeight - container.clientHeight);
+    const nextScrollTop = Math.min(
+      Math.max(0, targetTop - container.clientHeight / 2),
+      maxScroll
+    );
+    container.scrollTo({ top: nextScrollTop, behavior: "smooth" });
+  };
+
+  const handleLocateNow = () => {
+    setCurrentDate(new Date());
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToNow();
+      });
+    });
+  };
+
   function stopAutoScroll() {
     if (autoScrollRafRef.current) {
       cancelAnimationFrame(autoScrollRafRef.current);
@@ -186,7 +213,15 @@ export default function Home() {
 
   function handleDragMove(event: DragMoveEvent) {
     const data = event.active.data.current as { type?: string } | undefined;
-    if (data?.type && data.type !== "pool-task") return;
+    if (
+      data?.type &&
+      data.type !== "pool-task" &&
+      data.type !== "timeline-move" &&
+      data.type !== "timeline-resize-top" &&
+      data.type !== "timeline-resize-bottom"
+    ) {
+      return;
+    }
     const overId = String(event.over?.id ?? "");
     if (overId !== "timeline" || !event.active.rect.current.translated) {
       setDropMinute(null);
@@ -213,16 +248,18 @@ export default function Home() {
     if (speed === 0) stopAutoScroll();
     else startAutoScroll();
 
-    const minutePx = BASE_MINUTE_PX * zoom;
-    setDropMinute(
-      getDropMinuteFromTranslatedRect(
-        translated,
-        rect,
-        container.scrollTop,
-        minutePx,
-        PADDING_TOP
-      )
-    );
+    if (data?.type === "pool-task") {
+      const minutePx = BASE_MINUTE_PX * zoom;
+      setDropMinute(
+        getDropMinuteFromTranslatedRect(
+          translated,
+          rect,
+          container.scrollTop,
+          minutePx,
+          PADDING_TOP
+        )
+      );
+    }
   }
 
   function resetDragState() {
@@ -346,6 +383,7 @@ export default function Home() {
             onZoomChange={handleZoomChange}
             currentDate={currentDate}
             onDateChange={setCurrentDate}
+            onLocateNow={handleLocateNow}
           />
           <TimeAxis
             shakeTaskId={shakeTaskId}

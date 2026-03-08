@@ -4,6 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import { devtools } from "zustand/middleware";
 import { nanoid } from "nanoid";
 import type { Task, CollectedBottle, ScenarioTag } from "@/types/task";
+import { playSound } from "@/utils/sound";
 
 // ---------------------------------------------------------------------------
 // State shape
@@ -56,6 +57,7 @@ interface TaskActions {
         | "status"
         | "isDone"
         | "isUnfinished"
+        | "isMissedFocus"
         | "completedAt"
         | "startedAt"
         | "scheduledDate"
@@ -130,9 +132,7 @@ interface TaskActions {
 export const taskSelectors = {
   /** 右侧任务池：unscheduled 或 unfinished 的任务 */
   poolTasks: (state: TaskState) =>
-    state.tasks.filter(
-      (t) => t.status === "unscheduled" || t.status === "unfinished"
-    ),
+    state.tasks.filter((t) => t.status === "unscheduled"),
 
   /** 时间轴上的任务：scheduled 或 in_progress */
   scheduledTasks: (state: TaskState) =>
@@ -149,7 +149,9 @@ export const taskSelectors = {
 
   /** 当前进行中的任务实体 */
   activeTask: (state: TaskState) =>
-    state.tasks.find((t) => t.id === state.activeTaskId) ?? null,
+    state.tasks.find(
+      (t) => t.id === state.activeTaskId && t.status === "in_progress"
+    ) ?? null,
 };
 
 // ---------------------------------------------------------------------------
@@ -162,12 +164,10 @@ const pad2 = (value: number) => String(value).padStart(2, "0");
 const toLocalDateKey = (date: Date) =>
   `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 const now = new Date();
-const yesterday = new Date(now);
-yesterday.setDate(yesterday.getDate() - 1);
-const yesterdayKey = toLocalDateKey(yesterday);
-const baseMinutes = 9 * 60;
-const timeFromOffset = (offsetMinutes: number) => {
-  const minutes = Math.min(1439, baseMinutes + offsetMinutes);
+const todayKey = toLocalDateKey(now);
+const currentMinutes = now.getHours() * 60 + now.getMinutes();
+const timeFromNowOffset = (offsetMinutes: number) => {
+  const minutes = Math.max(0, Math.min(1439, currentMinutes + offsetMinutes));
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return `${pad2(h)}:${pad2(m)}`;
@@ -177,104 +177,59 @@ const timeFromOffset = (offsetMinutes: number) => {
 const INITIAL_DEMO_TASKS: Task[] = [
   {
     id: "demo-1",
-    title: "完成项目需求文档",
-    type: "todo",
+    title: "番茄专注：整理今天最重要的三件事",
+    type: "focus",
     tag: "工作",
     duration: 25,
     status: "scheduled",
-    scheduledDate: yesterdayKey,
-    scheduledTime: timeFromOffset(10),
+    scheduledDate: todayKey,
+    scheduledTime: timeFromNowOffset(3),
     createdAt: Date.now(),
   },
   {
     id: "demo-2",
-    title: "阅读《深度工作》第三章",
-    type: "todo",
+    title: "深度学习章节精读",
+    type: "focus",
     tag: "学习",
-    duration: 50,
+    duration: 35,
     status: "scheduled",
-    scheduledDate: yesterdayKey,
-    scheduledTime: timeFromOffset(40),
+    scheduledDate: todayKey,
+    scheduledTime: timeFromNowOffset(30),
     createdAt: Date.now(),
   },
   {
     id: "demo-3",
-    title: "回复团队邮件",
-    type: "todo",
+    title: "复盘与写作冲刺",
+    type: "focus",
     tag: "工作",
-    duration: 15,
+    duration: 20,
     status: "scheduled",
-    scheduledDate: yesterdayKey,
-    scheduledTime: timeFromOffset(75),
+    scheduledDate: todayKey,
+    scheduledTime: timeFromNowOffset(70),
     createdAt: Date.now(),
   },
   {
     id: "demo-4",
-    title: "整理桌面文件",
-    type: "todo",
+    title: "错过示例：晨间英语听力",
+    type: "focus",
     tag: "生活",
     duration: 20,
     status: "scheduled",
-    scheduledDate: yesterdayKey,
-    scheduledTime: timeFromOffset(110),
+    scheduledDate: todayKey,
+    scheduledTime: timeFromNowOffset(-50),
+    isMissedFocus: true,
     createdAt: Date.now(),
   },
   {
     id: "demo-5",
-    title: "晨间冥想",
-    type: "todo",
+    title: "喝水休息",
+    type: "focus",
     tag: "生活",
     duration: 10,
-    status: "scheduled",
-    scheduledDate: yesterdayKey,
-    scheduledTime: timeFromOffset(145),
+    status: "unscheduled",
+    scheduledTime:timeFromNowOffset(-100),
     createdAt: Date.now(),
   },
-  // {
-  //   id: "demo-1",
-  //   title: "完成项目需求文档",
-  //   type: "todo",
-  //   tag: "工作",
-  //   duration: 25,
-  //   status: "unscheduled",
-  //   createdAt: 0,
-  // },
-  // {
-  //   id: "demo-2",
-  //   title: "阅读《深度工作》第三章",
-  //   type: "todo",
-  //   tag: "学习",
-  //   duration: 50,
-  //   status: "unscheduled",
-  //   createdAt: 0,
-  // },
-  // {
-  //   id: "demo-3",
-  //   title: "回复团队邮件",
-  //   type: "todo",
-  //   tag: "工作",
-  //   duration: 15,
-  //   status: "unscheduled",
-  //   createdAt: 0,
-  // },
-  // {
-  //   id: "demo-4",
-  //   title: "整理桌面文件",
-  //   type: "todo",
-  //   tag: "生活",
-  //   duration: 20,
-  //   status: "unscheduled",
-  //   createdAt: 0,
-  // },
-  // {
-  //   id: "demo-5",
-  //   title: "晨间冥想",
-  //   type: "todo",
-  //   tag: "生活",
-  //   duration: 10,
-  //   status: "unscheduled",
-  //   createdAt: 0,
-  // },
 ];
 export const useTaskStore = create<TaskStore>()(
   devtools(
@@ -322,7 +277,13 @@ export const useTaskStore = create<TaskStore>()(
         set(
           (state) => {
             const task = state.tasks.find((t) => t.id === taskId);
-            if (task) Object.assign(task, patch);
+            if (task) {
+              const wasCompleted = task.status === "completed";
+              Object.assign(task, patch);
+              if (!wasCompleted && patch.status === "completed") {
+                playSound("finish");
+              }
+            }
           },
           false,
           "updateTask"
@@ -360,6 +321,7 @@ export const useTaskStore = create<TaskStore>()(
               task.scheduledDate = scheduledDate;
               task.scheduledTime = scheduledTime;
               task.isDone = false;
+              task.isMissedFocus = false;
             }
           },
           false,
@@ -379,10 +341,15 @@ export const useTaskStore = create<TaskStore>()(
               const end = new Date(start);
               end.setMinutes(end.getMinutes() + (task.duration || 25));
               if (end.getTime() <= now) {
-                task.status = "unscheduled";
-                task.type = "todo";
-                task.scheduledDate = undefined;
-                task.scheduledTime = undefined;
+                if (task.type === "focus") {
+                  task.status = "scheduled";
+                  task.isMissedFocus = true;
+                } else {
+                  task.status = "unscheduled";
+                  task.type = "todo";
+                  task.scheduledDate = undefined;
+                  task.scheduledTime = undefined;
+                }
                 task.startedAt = undefined;
                 task.completedAt = undefined;
                 task.unfinishedAt = undefined;
@@ -411,8 +378,8 @@ export const useTaskStore = create<TaskStore>()(
               task.scheduledDate = scheduledDate;
               task.scheduledTime = scheduledTime;
               task.isDone = false;
-              // 重新排期时清除未完成标签
               task.isUnfinished = false;
+              task.isMissedFocus = false;
             }
           },
           false,
@@ -448,9 +415,18 @@ export const useTaskStore = create<TaskStore>()(
 
             const task = state.tasks.find((t) => t.id === taskId);
             if (task && task.status === "scheduled") {
+              const now = new Date();
+              const nowDate = toLocalDateKey(now);
+              const nowTime = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
               task.status = "in_progress";
-              task.startedAt = Date.now();
+              task.startedAt = now.getTime();
+              if (task.type === "focus") {
+                task.scheduledDate = nowDate;
+                task.scheduledTime = nowTime;
+              }
+              task.isMissedFocus = false;
               state.activeTaskId = taskId;
+              playSound("begin");
             }
           },
           false,
@@ -465,6 +441,8 @@ export const useTaskStore = create<TaskStore>()(
               task.status = "completed";
               task.completedAt = Date.now();
               task.isDone = true;
+              task.isMissedFocus = false;
+              playSound("finish");
 
               // 写入收集瓶
               state.collection.push({
@@ -487,15 +465,11 @@ export const useTaskStore = create<TaskStore>()(
           (state) => {
             const task = state.tasks.find((t) => t.id === taskId);
             if (task && task.status === "in_progress") {
-              // 状态机：in_progress → unfinished
-              task.status = "unfinished";
-              task.isUnfinished = true;
+              task.status = "scheduled";
+              task.isUnfinished = false;
+              task.isMissedFocus = true;
               task.unfinishedAt = Date.now();
               task.isDone = false;
-
-              // 清除排期信息（弹回任务池后需要重新排期）
-              task.scheduledDate = undefined;
-              task.scheduledTime = undefined;
               task.startedAt = undefined;
 
               if (state.activeTaskId === taskId) state.activeTaskId = null;
@@ -514,12 +488,10 @@ export const useTaskStore = create<TaskStore>()(
 
             state.tasks.forEach((task) => {
               if (task.status === "in_progress") {
-                // 仍在进行中的任务视为未完成，自动弹回任务池
-                task.status = "unfinished";
-                task.isUnfinished = true;
+                task.status = "scheduled";
+                task.isUnfinished = false;
+                task.isMissedFocus = true;
                 task.unfinishedAt = now;
-                task.scheduledDate = undefined;
-                task.scheduledTime = undefined;
                 task.startedAt = undefined;
               }
             });
