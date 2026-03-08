@@ -26,6 +26,7 @@ import {
   isPastDropMinute,
   minutesToTime,
 } from "@/utils/timelineDnd";
+import OnboardingGuide from '@/components/OnboardingModal';
 
 const SCENARIO_COLORS: Record<string, string> = {
   工作: "#f59e0b",
@@ -378,6 +379,7 @@ export default function Home() {
             backgroundColor: "var(--panel-bg)",
           }}
         >
+          <OnboardingGuide />
           <TopHeader
             zoom={zoom}
             onZoomChange={handleZoomChange}
