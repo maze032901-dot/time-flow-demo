@@ -626,6 +626,24 @@ export default function SmartControlBar() {
     elapsedSnapshot.key === currentTimerKey &&
     elapsedSnapshot.seconds >= (activeTask?.duration || 25) * 60;
 
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  if (!isMounted) {
+    return (
+      <div
+        className="shrink-0 border-t flex items-center px-4 gap-3 flex-wrap"
+        style={{
+          height: "var(--control-bar-height)",
+          borderColor: "var(--border-color)",
+          backgroundColor: "var(--panel-bg)",
+        }}
+      />
+    );
+  }
+
   return (
     <div
       className="shrink-0 border-t flex items-center px-4 gap-3 flex-wrap"

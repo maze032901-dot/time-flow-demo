@@ -8,6 +8,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useShallow } from "zustand/react/shallow";
 import { useTaskStore, taskSelectors } from "@/store/useTaskStore";
 import type { Task, TaskType, ScenarioTag } from "@/types/task";
+import AiTaskDecompositionModal from "@/components/ai-modal/AiTaskDecompositionModal";
 
 const TYPE_CONFIG: Record<
   TaskType,
@@ -354,7 +355,7 @@ export default function RightPanel() {
         />
       )}
 
-      {showAiModal && <AiPreviewModal onClose={() => setShowAiModal(false)} />}
+      {showAiModal && <AiTaskDecompositionModal onClose={() => setShowAiModal(false)} />}
 
       {editingTask && (
         <EditTaskModal
@@ -945,39 +946,4 @@ function EditTaskModal({
   );
 }
 
-function AiPreviewModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-[90] flex items-center justify-center p-4"
-      style={{
-        backgroundColor: "rgba(15,23,42,0.25)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-      }}
-      onClick={onClose}
-    >
-      <div
-        className="relative w-full max-w-md rounded-2xl border p-3 shadow-xl"
-        style={{
-          borderColor: "var(--border-color)",
-          backgroundColor: "var(--panel-bg)",
-        }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button
-          onClick={onClose}
-          className="absolute right-2 top-2 p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
-          style={{ color: "var(--text-muted)" }}
-          aria-label="Close AI modal"
-        >
-          <X size={16} />
-        </button>
-        <img
-          src="/AI_UI.png"
-          alt="AI Placeholder"
-          className="w-full h-56 object-cover rounded-xl"
-        />
-      </div>
-    </div>
-  );
-}
+
