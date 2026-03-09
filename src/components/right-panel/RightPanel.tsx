@@ -1,8 +1,8 @@
 "use client";
 
-import { Plus, Sparkles, Droplets, Pencil, Trash2, X, TriangleAlert } from "lucide-react";
+import { Plus, Sparkles, Droplets, Pencil, Trash2, X, TriangleAlert, ChevronDown, ChevronRight } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
-import { useDroppable } from "@dnd-kit/core";
+import { useDroppable, useDraggable } from "@dnd-kit/core";
 import { useSortable, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useShallow } from "zustand/react/shallow";
@@ -46,6 +46,7 @@ type PoolTask = {
   duration?: number;
   isUnfinished?: boolean;
   isMissedFocus?: boolean;
+  parentId?: string;
 };
 
 type ContextMenuState = {
@@ -57,6 +58,7 @@ type ContextMenuState = {
 export default function RightPanel() {
   const poolTasks = useTaskStore(useShallow(taskSelectors.poolTasks));
   const completedTasks = useTaskStore(useShallow(taskSelectors.completedTasks));
+  const allTasks = useTaskStore(useShallow((s) => s.tasks));
   const addTask = useTaskStore((s) => s.addTask);
   const updateTask = useTaskStore((s) => s.updateTask);
   const removeTask = useTaskStore((s) => s.removeTask);
@@ -66,6 +68,7 @@ export default function RightPanel() {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [panelMode, setPanelMode] = useState<"pool" | "done">("pool");
+  const [collapsedTasks, setCollapsedTasks] = useState<Record<string, boolean>>({});
   const [filterType, setFilterType] = useState<"all" | TaskType>("all");
   const [filterScenario, setFilterScenario] = useState<ScenarioTag | "all">("all");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -74,12 +77,27 @@ export default function RightPanel() {
   });
 
   const doneTasks = completedTasks.filter((task) => task.type === "todo");
-  const sourceTasks = panelMode === "done" ? doneTasks : poolTasks;
+  let sourceTasks = panelMode === "done" ? doneTasks : poolTasks;
+  if (panelMode === "done") {
+    const parentIdsInDone = new Set(doneTasks.map(t => t.parentId).filter(Boolean));
+    const parentsToAdd = allTasks.filter(t => parentIdsInDone.has(t.id) && !doneTasks.some(dt => dt.id === t.id));
+    sourceTasks = [...sourceTasks, ...parentsToAdd];
+  }
+
   const filtered = sourceTasks.filter((t) => {
     const typeMatch = filterType === "all" || t.type === filterType;
     const scenarioMatch = filterScenario === "all" || t.tag === filterScenario;
     return typeMatch && scenarioMatch;
   });
+  
+  const topLevelFiltered = filtered.filter(t => !t.parentId || !filtered.some(f => f.id === t.parentId));
+  const buildChildren = (parentId: string) => filtered.filter(t => t.parentId === parentId);
+  
+  const handleToggleCollapse = (taskId: string, defaultCollapsed: boolean = false) => {
+    const key = `${panelMode}-${taskId}`;
+    setCollapsedTasks(prev => ({...prev, [key]: prev[key] !== undefined ? !prev[key] : !defaultCollapsed}));
+  };
+
   const typeCounts = {
     all: sourceTasks.length,
     focus: sourceTasks.filter((task) => task.type === "focus").length,
@@ -147,15 +165,21 @@ export default function RightPanel() {
   };
 
   const handleRestoreDoneTask = (taskId: string) => {
-    updateTask(taskId, {
-      status: "unscheduled",
+    const task = useTaskStore.getState().tasks.find((t) => t.id === taskId);
+    const restorePayload = {
+      status: "unscheduled" as const,
       isDone: false,
       isUnfinished: false,
       startedAt: undefined,
       completedAt: undefined,
       scheduledDate: undefined,
       scheduledTime: undefined,
-    });
+    };
+    updateTask(taskId, restorePayload);
+    
+    if (task?.parentId) {
+      updateTask(task.parentId, restorePayload);
+    }
   };
 
   const handleOpenEdit = (taskId: string) => {
@@ -304,18 +328,21 @@ export default function RightPanel() {
           </div>
         ) : panelMode === "pool" ? (
           <SortableContext
-            items={filtered.map((task) => task.id)}
+            items={topLevelFiltered.map((task) => task.id)}
             strategy={verticalListSortingStrategy}
           >
             <div
               className="space-y-2 rounded-lg transition-colors"
               style={{ backgroundColor: isOverPool ? "rgba(99,102,241,0.08)" : "transparent" }}
             >
-              {filtered.map((task) => (
+              {topLevelFiltered.map((task) => (
                 <SortableTaskCard
                   key={task.id}
                   task={task}
-                  contextMenuOpen={contextMenu?.taskId === task.id}
+                  subTasks={buildChildren(task.id)}
+                  collapsed={collapsedTasks[`pool-${task.id}`] ?? false}
+                  onToggleCollapse={() => handleToggleCollapse(task.id, false)}
+                  activeContextMenuId={contextMenu?.taskId}
                   onContextMenu={handleContextMenuOpen}
                   onKeyboardContextMenu={openContextMenuAt}
                 />
@@ -324,10 +351,13 @@ export default function RightPanel() {
           </SortableContext>
         ) : (
           <div className="space-y-2">
-            {filtered.map((task) => (
+            {topLevelFiltered.map((task) => (
               <DoneTaskCard
                 key={task.id}
                 task={task}
+                subTasks={buildChildren(task.id)}
+                collapsed={collapsedTasks[`done-${task.id}`] ?? true}
+                onToggleCollapse={() => handleToggleCollapse(task.id, true)}
                 onRestore={handleRestoreDoneTask}
                 onDelete={handleDeleteTask}
               />
@@ -410,53 +440,86 @@ function DoneTaskCard({
   task,
   onRestore,
   onDelete,
+  subTasks = [],
+  collapsed = true,
+  onToggleCollapse,
 }: {
   task: Task;
   onRestore: (taskId: string) => void;
   onDelete: (taskId: string) => void;
+  subTasks?: Task[];
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const scenarioConf = SCENARIO_CONFIG[task.tag];
   return (
-    <div
-      className="rounded-xl border px-3 py-2.5"
-      style={{ borderColor: "var(--border-color)", backgroundColor: "var(--panel-bg)" }}
-    >
-      <div className="flex items-start gap-2">
-        <div className="w-1.5 rounded-full self-stretch" style={{ backgroundColor: scenarioConf.color }} />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{task.title}</p>
-          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-            <span
-              className="inline-flex px-1.5 py-0.5 rounded text-xs"
-              style={{ color: scenarioConf.color, backgroundColor: `${scenarioConf.color}20` }}
-            >
-              {scenarioConf.label}
-            </span>
-            {task.duration && (
-              <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                {task.duration}m
-              </span>
+    <div>
+      <div
+        className="rounded-xl border px-3 py-2.5"
+        style={{ borderColor: "var(--border-color)", backgroundColor: "var(--panel-bg)" }}
+      >
+        <div className="flex items-start gap-2">
+          <div className="w-1.5 rounded-full self-stretch" style={{ backgroundColor: scenarioConf.color }} />
+          <div className="flex-1 min-w-0 flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate" style={{ color: "var(--text-muted)", textDecoration: "line-through" }}>{task.title}</p>
+              <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                <span
+                  className="inline-flex px-1.5 py-0.5 rounded text-xs"
+                  style={{ color: scenarioConf.color, backgroundColor: `${scenarioConf.color}20` }}
+                >
+                  {scenarioConf.label}
+                </span>
+                {task.duration && (
+                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    {task.duration}m
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {subTasks.length > 0 && (
+               <button 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
+                  className="text-gray-400 hover:text-gray-600 transition-colors rounded-full flex items-center justify-center p-1 hover:bg-gray-100 mr-1"
+               >
+                  {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+               </button>
             )}
+            {subTasks.length === 0 && (
+              <button
+                onClick={() => onRestore(task.id)}
+                className="px-2 py-1 rounded-md text-xs font-medium transition-colors hover:bg-indigo-50"
+                style={{ color: "#4f46e5" }}
+              >
+                Restore
+              </button>
+            )}
+            <button
+              onClick={() => onDelete(task.id)}
+              className="p-1.5 rounded-md transition-colors hover:bg-red-50"
+              style={{ color: "#ef4444" }}
+              aria-label="Delete done task"
+            >
+              <Trash2 size={14} />
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => onRestore(task.id)}
-            className="px-2 py-1 rounded-md text-xs font-medium transition-colors hover:bg-indigo-50"
-            style={{ color: "#4f46e5" }}
-          >
-            Restore
-          </button>
-          <button
-            onClick={() => onDelete(task.id)}
-            className="p-1.5 rounded-md transition-colors hover:bg-red-50"
-            style={{ color: "#ef4444" }}
-            aria-label="Delete done task"
-          >
-            <Trash2 size={14} />
-          </button>
-        </div>
       </div>
+      {subTasks.length > 0 && !collapsed && (
+        <div className="pl-[26px] mt-1.5 space-y-1.5 border-l-2 border-indigo-50/50 ml-3">
+          {subTasks.map(child => (
+             <DoneTaskCard 
+               key={child.id}
+               task={child} 
+               onRestore={onRestore}
+               onDelete={onDelete}
+             />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -465,15 +528,21 @@ function SortableTaskCard({
   task,
   onContextMenu,
   onKeyboardContextMenu,
-  contextMenuOpen,
+  activeContextMenuId,
+  subTasks = [],
+  collapsed = true,
+  onToggleCollapse,
 }: {
   task: PoolTask;
   onContextMenu: (event: React.MouseEvent, taskId: string) => void;
   onKeyboardContextMenu: (taskId: string, x: number, y: number) => void;
-  contextMenuOpen: boolean;
+  activeContextMenuId?: string;
+  subTasks?: PoolTask[];
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: task.id, data: { type: "pool-task", task } });
+    useSortable({ id: task.id, data: { type: "pool-task", task }, disabled: subTasks.length > 0 });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -483,9 +552,65 @@ function SortableTaskCard({
   };
 
   return (
+    <div ref={setNodeRef} style={style}>
+      <div
+        onContextMenu={(event) => onContextMenu(event, task.id)}
+        onKeyDown={(event) => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onKeyboardContextMenu(task.id, rect.left + rect.width / 2, rect.top + 16);
+          }
+        }}
+        {...listeners}
+        {...attributes}
+      >
+        <TaskCard 
+          task={task} 
+          isDragging={isDragging} 
+          contextMenuOpen={activeContextMenuId === task.id} 
+          hasChildren={subTasks.length > 0}
+          collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
+        />
+      </div>
+      
+      {subTasks.length > 0 && !collapsed && (
+        <div className="pl-[26px] mt-1.5 space-y-1.5 border-l-2 border-indigo-50/50 ml-3">
+          {subTasks.map(child => (
+             <DraggableSubTaskCard
+               key={child.id}
+               task={child}
+               onContextMenu={onContextMenu}
+               onKeyboardContextMenu={onKeyboardContextMenu}
+               activeContextMenuId={activeContextMenuId}
+             />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DraggableSubTaskCard({
+  task,
+  onContextMenu,
+  onKeyboardContextMenu,
+  activeContextMenuId,
+}: {
+  task: PoolTask;
+  onContextMenu: (event: React.MouseEvent, taskId: string) => void;
+  onKeyboardContextMenu: (taskId: string, x: number, y: number) => void;
+  activeContextMenuId?: string;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: task.id,
+    data: { type: "pool-task", task },
+  });
+
+  return (
     <div
       ref={setNodeRef}
-      style={style}
       onContextMenu={(event) => onContextMenu(event, task.id)}
       onKeyDown={(event) => {
         if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -496,8 +621,13 @@ function SortableTaskCard({
       }}
       {...listeners}
       {...attributes}
+      className={`cursor-grab active:cursor-grabbing ${isDragging ? "opacity-30" : ""}`}
     >
-      <TaskCard task={task} isDragging={isDragging} contextMenuOpen={contextMenuOpen} />
+      <TaskCard
+        task={task}
+        isDragging={isDragging}
+        contextMenuOpen={activeContextMenuId === task.id}
+      />
     </div>
   );
 }
@@ -506,16 +636,28 @@ function TaskCard({
   task,
   isDragging,
   contextMenuOpen,
+  hasChildren,
+  collapsed,
+  onToggleCollapse,
 }: {
   task: PoolTask;
   isDragging: boolean;
   contextMenuOpen: boolean;
+  hasChildren?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const typeConf = TYPE_CONFIG[task.type];
   const scenarioConf = SCENARIO_CONFIG[task.tag];
   const updateTask = useTaskStore((s) => s.updateTask);
   const [isChecked, setIsChecked] = useState(false);
   const removeTimerRef = useRef<number | null>(null);
+
+  const subTasksFromStore = useTaskStore(
+    useShallow(state => state.tasks.filter(t => t.parentId === task.id))
+  );
+  const totalSubTasksCount = subTasksFromStore.length;
+  const completedSubTasksCount = subTasksFromStore.filter(t => t.status === "completed").length;
 
   useEffect(() => {
     if (!isChecked) return;
@@ -554,7 +696,7 @@ function TaskCard({
           style={{ backgroundColor: scenarioConf.color }}
         />
         <div className="flex-1 min-w-0 flex items-start gap-2">
-          {task.type === "todo" && (
+          {task.type === "todo" && totalSubTasksCount === 0 && (
             <button
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
@@ -590,6 +732,26 @@ function TaskCard({
                 <path d="M5 12l4 4L19 7" />
               </svg>
             </button>
+          )}
+          {totalSubTasksCount > 0 && (
+            <div 
+              className="w-[26px] h-[26px] mt-0.5 rounded-full shrink-0 flex items-center justify-center relative"
+              style={{ backgroundColor: `${scenarioConf.color}15` }}
+              title={`${completedSubTasksCount} / ${totalSubTasksCount} completed`}
+            >
+              <span className="text-[10px] font-bold" style={{ color: scenarioConf.color, letterSpacing: "-0.5px" }}>
+                {completedSubTasksCount}/{totalSubTasksCount}
+              </span>
+              <svg viewBox="0 0 24 24" className="w-[26px] h-[26px] absolute inset-0 m-auto -rotate-90">
+                <circle cx="12" cy="12" r="10" stroke={`${scenarioConf.color}30`} strokeWidth="2.5" fill="none" />
+                <circle cx="12" cy="12" r="10" stroke={scenarioConf.color} strokeWidth="2.5" fill="none" 
+                   strokeDasharray={62.83} 
+                   strokeDashoffset={62.83 - (62.83 * completedSubTasksCount / totalSubTasksCount)} 
+                   strokeLinecap="round"
+                   className="transition-all duration-500 ease-out"
+                />
+              </svg>
+            </div>
           )}
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium leading-snug line-clamp-2">
@@ -641,6 +803,17 @@ function TaskCard({
             </div>
           </div>
         </div>
+        {hasChildren && (
+           <div className="shrink-0 flex flex-col justify-center pl-1 opacity-80 hover:opacity-100">
+             <button 
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
+                className="text-gray-400 hover:text-gray-700 transition-colors rounded-full flex items-center justify-center w-7 h-7 hover:bg-gray-100/80 mt-1"
+             >
+                {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+             </button>
+           </div>
+        )}
       </div>
     </div>
   );

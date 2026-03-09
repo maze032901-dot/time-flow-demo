@@ -39,6 +39,7 @@ interface TaskActions {
     title: string;
     tag: ScenarioTag;
     duration?: number;
+    parentId?: string;
   }) => void;
 
   /** 删除任务（任意状态均可删除） */
@@ -243,7 +244,7 @@ export const useTaskStore = create<TaskStore>()(
 
       // ── Task CRUD ──────────────────────────────────────────────────────
 
-      addTask: ({ title, tag, duration = 25 }) =>
+      addTask: ({ title, tag, duration = 25, parentId }) =>
         set(
           (state) => {
             state.tasks.push({
@@ -254,6 +255,7 @@ export const useTaskStore = create<TaskStore>()(
               duration,
               status: "unscheduled",
               createdAt: Date.now(),
+              parentId,
             });
           },
           false,
@@ -282,6 +284,21 @@ export const useTaskStore = create<TaskStore>()(
               Object.assign(task, patch);
               if (!wasCompleted && patch.status === "completed") {
                 playSound("finish");
+                
+                // If this is a subtask, check if all siblings are now completed
+                if (task.parentId) {
+                   const siblings = state.tasks.filter(t => t.parentId === task.parentId);
+                   const allCompleted = siblings.length > 0 && siblings.every(t => t.status === "completed");
+                   if (allCompleted) {
+                       const parentTask = state.tasks.find(t => t.id === task.parentId);
+                       if (parentTask && parentTask.status !== "completed") {
+                           parentTask.status = "completed";
+                           parentTask.completedAt = Date.now();
+                           parentTask.isDone = true;
+                           parentTask.isUnfinished = false;
+                       }
+                   }
+                }
               }
             }
           },
@@ -443,6 +460,21 @@ export const useTaskStore = create<TaskStore>()(
               task.isDone = true;
               task.isMissedFocus = false;
               playSound("finish");
+
+              if (task.parentId) {
+                const siblings = state.tasks.filter((t) => t.parentId === task.parentId);
+                const allCompleted =
+                  siblings.length > 0 && siblings.every((t) => t.status === "completed");
+                if (allCompleted) {
+                  const parentTask = state.tasks.find((t) => t.id === task.parentId);
+                  if (parentTask && parentTask.status !== "completed") {
+                    parentTask.status = "completed";
+                    parentTask.completedAt = Date.now();
+                    parentTask.isDone = true;
+                    parentTask.isUnfinished = false;
+                  }
+                }
+              }
 
               // 写入收集瓶
               state.collection.push({

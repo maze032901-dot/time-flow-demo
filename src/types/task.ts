@@ -57,6 +57,9 @@ export interface Task {
   isUnfinished?: boolean;
   isMissedFocus?: boolean;
 
+  /** 父任务 ID（如果有的话） */
+  parentId?: string;
+  
   /** 任务创建时间 */
   createdAt: number;
 }

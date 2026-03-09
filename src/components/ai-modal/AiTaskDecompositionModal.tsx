@@ -98,10 +98,10 @@ export default function AiTaskDecompositionModal({
           const sourceTitle = displayTasks.find(t => t.id === taskId)?.title || "Task";
           // Generate slightly different mock tasks based on index to differentiate
           mockResults.push(
-            { id: `sub1-${taskId}`, title: `${sourceTitle} - Step 1: Research & Planning`, sourceTitle, sourceTaskId: taskId },
-            { id: `sub2-${taskId}`, title: `${sourceTitle} - Step 2: Resource Allocation`, sourceTitle, sourceTaskId: taskId },
-            { id: `sub3-${taskId}`, title: `${sourceTitle} - Step 3: Execution phase`, sourceTitle, sourceTaskId: taskId },
-            { id: `sub4-${taskId}`, title: `${sourceTitle} - Step 4: Review and Finalize`, sourceTitle, sourceTaskId: taskId },
+            { id: `sub1-${taskId}`, title: `Step 1: Research & Planning`, sourceTitle, sourceTaskId: taskId },
+            { id: `sub2-${taskId}`, title: `Step 2: Resource Allocation`, sourceTitle, sourceTaskId: taskId },
+            { id: `sub3-${taskId}`, title: `Step 3: Execution phase`, sourceTitle, sourceTaskId: taskId },
+            { id: `sub4-${taskId}`, title: `Step 4: Review and Finalize`, sourceTitle, sourceTaskId: taskId },
           );
       });
 
@@ -127,11 +127,12 @@ export default function AiTaskDecompositionModal({
     const tasksToCommit = generatedSubTasks.filter(t => selectedSubTaskIds.includes(t.id));
     
     tasksToCommit.forEach(t => {
-      const sourceTask = displayTasks.find(src => src.title === t.sourceTitle);
+      const sourceTask = displayTasks.find(src => src.id === t.sourceTaskId);
       addTask({
         title: t.title,
         tag: sourceTask?.tag || "工作",
         duration: 25,
+        parentId: t.sourceTaskId,
       });
     });
     
